@@ -125,6 +125,34 @@ class TestMidiPortSelection(unittest.TestCase):
             self.assertIn("Some Synth", str(ctx.exception))
 
 
+class TestVirtualPortFallback(unittest.TestCase):
+    """With no cable present, macOS/Linux create their own virtual port;
+    Windows must keep demanding loopMIDI (rtmidi can't fake ports there)."""
+
+    def test_prefers_existing_cable_over_virtual(self):
+        with mock.patch.object(midi_bridge, "list_output_ports",
+                               return_value=["IAC Driver Bus 1"]), \
+             mock.patch.object(midi_bridge.mido, "open_output") as opened:
+            midi_bridge.open_port()
+        opened.assert_called_once_with("IAC Driver Bus 1")
+
+    def test_creates_virtual_port_when_no_cable(self):
+        with mock.patch.object(midi_bridge, "list_output_ports", return_value=[]), \
+             mock.patch.object(midi_bridge.sys, "platform", "darwin"), \
+             mock.patch.object(midi_bridge.mido, "open_output") as opened:
+            midi_bridge.open_port()
+        opened.assert_called_once_with(midi_bridge.VIRTUAL_PORT_NAME, virtual=True)
+
+    def test_windows_still_requires_loopmidi(self):
+        with mock.patch.object(midi_bridge, "list_output_ports", return_value=[]), \
+             mock.patch.object(midi_bridge.sys, "platform", "win32"), \
+             mock.patch.object(midi_bridge.mido, "open_output") as opened:
+            with self.assertRaises(midi_bridge.MidiBridgeError) as ctx:
+                midi_bridge.open_port()
+        opened.assert_not_called()
+        self.assertIn("loopMIDI", str(ctx.exception))
+
+
 class TestMusicTheory(unittest.TestCase):
     """Roman numerals must expand to the correct MIDI notes."""
 

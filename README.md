@@ -62,10 +62,14 @@ pip install -e .        # or: uv sync
    auto-detected).
 3. Leave loopMIDI running — the port only exists while it runs.
 
-**macOS — IAC Driver**
-1. Open **Audio MIDI Setup** (Applications ▸ Utilities).
-2. Window ▸ Show MIDI Studio, double-click **IAC Driver**.
-3. Tick **Device is online**. Optionally rename the bus to **FL MCP**.
+**macOS — nothing to do**
+
+The server creates its own virtual port named **FL MCP** automatically the
+first time it needs one. FL Studio lists it as an input while the server is
+running. (If you prefer an always-on port that exists even when the server
+is down, enable the **IAC Driver** in Audio MIDI Setup — Window ▸ Show MIDI
+Studio ▸ double-click IAC Driver ▸ tick *Device is online* — and it will be
+used instead.)
 
 If auto-detection picks the wrong port, set the environment variable
 `FL_MCP_MIDI_PORT` to (part of) the right port's name.

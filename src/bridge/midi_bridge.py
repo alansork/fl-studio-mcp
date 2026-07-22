@@ -5,7 +5,10 @@ to incoming MIDI. So after we write ``request.json`` we send one Control
 Change message (CC 110, value 127, channel 16) through a virtual MIDI cable:
 
 * Windows: a loopMIDI port (https://www.tobias-erichsen.de/software/loopmidi.html)
-* macOS:   the built-in IAC Driver (enable it in Audio MIDI Setup)
+* macOS:   an existing IAC bus if one is online — otherwise we simply CREATE
+  our own virtual port named "FL MCP" (CoreMIDI allows this), so no setup in
+  Audio MIDI Setup is needed at all. FL Studio sees it in its Input list for
+  as long as this server is running.
 
 The device script inside FL Studio listens for that exact CC and then reads
 and executes the request file.
@@ -14,6 +17,7 @@ and executes the request file.
 from __future__ import annotations
 
 import os
+import sys
 
 import mido
 
@@ -25,6 +29,10 @@ TRIGGER_VALUE = 127
 # Port-name fragments we search for, in order of preference. Users can also
 # force a specific port with the FL_MCP_MIDI_PORT environment variable.
 PREFERRED_PORT_FRAGMENTS = ("fl mcp", "flstudiomcp", "loopmidi", "iac")
+
+# Name of the virtual port we create ourselves when no cable exists.
+# Windows rtmidi cannot create virtual ports, hence the loopMIDI requirement.
+VIRTUAL_PORT_NAME = "FL MCP"
 
 
 class MidiBridgeError(Exception):
@@ -79,23 +87,36 @@ def find_port_name() -> str:
     )
 
 
+def open_port():
+    """Open the doorbell port.
+
+    Prefers an existing cable (loopMIDI / IAC / anything matching
+    FL_MCP_MIDI_PORT). If none exists and the OS supports it (macOS, Linux),
+    creates our own virtual port instead — FL Studio then sees an input
+    named "FL MCP" for as long as this server runs.
+    """
+    try:
+        name = find_port_name()
+    except MidiBridgeError:
+        if sys.platform.startswith("win"):
+            raise  # Windows can't create virtual ports — loopMIDI required
+        try:
+            return mido.open_output(VIRTUAL_PORT_NAME, virtual=True)
+        except Exception as exc:
+            raise MidiBridgeError(
+                f"No MIDI cable found and creating a virtual port failed: {exc}"
+            ) from exc
+    try:
+        return mido.open_output(name)
+    except Exception as exc:
+        raise MidiBridgeError(f"Could not open MIDI port {name!r}: {exc}") from exc
+
+
 def send_trigger() -> str:
     """Send the wake-up CC to FL Studio. Returns the port name used."""
     global _cached_port
-    name = find_port_name()
-
-    # Re-open the port if it changed or was never opened.
-    if _cached_port is None or _cached_port.name != name:
-        if _cached_port is not None:
-            try:
-                _cached_port.close()
-            except Exception:
-                pass
-        try:
-            _cached_port = mido.open_output(name)
-        except Exception as exc:
-            _cached_port = None
-            raise MidiBridgeError(f"Could not open MIDI port {name!r}: {exc}") from exc
+    if _cached_port is None:
+        _cached_port = open_port()
 
     msg = mido.Message(
         "control_change",
@@ -105,9 +126,21 @@ def send_trigger() -> str:
     )
     try:
         _cached_port.send(msg)
-    except Exception as exc:
-        # The port may have died (loopMIDI closed, etc.) — drop the cache so
-        # the next call re-discovers it.
+    except Exception:
+        # The port may have died (loopMIDI closed, IAC toggled off, ...).
+        # Re-open once — possibly falling back to our own virtual port —
+        # and retry before giving up.
+        try:
+            _cached_port.close()
+        except Exception:
+            pass
         _cached_port = None
-        raise MidiBridgeError(f"Failed to send MIDI trigger on {name!r}: {exc}") from exc
-    return name
+        _cached_port = open_port()
+        try:
+            _cached_port.send(msg)
+        except Exception as exc:
+            name = getattr(_cached_port, "name", "?")
+            _cached_port = None
+            raise MidiBridgeError(
+                f"Failed to send MIDI trigger on {name!r}: {exc}") from exc
+    return _cached_port.name
