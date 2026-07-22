@@ -73,9 +73,13 @@ def _apply_quantize(payload):
 
 def _apply_clear(payload):
     count = flp.score.noteCount
-    # Delete from the end so indices stay valid while we remove.
-    for i in range(count - 1, -1, -1):
-        flp.score.deleteNote(i)
+    clear = getattr(flp.score, "clearNotes", None)
+    if clear is not None:
+        clear(True)  # True = clear ALL notes, not just the selected ones
+    else:
+        # Older builds: delete from the end so indices stay valid.
+        for i in range(count - 1, -1, -1):
+            flp.score.deleteNote(i)
     return "Removed " + str(count) + " note(s)."
 
 

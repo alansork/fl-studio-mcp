@@ -138,6 +138,19 @@ def _write_response(request_id, ok, result=None, error=None):
 # Command handlers — each takes the params dict, returns a JSON-able result
 # ---------------------------------------------------------------------------
 
+def _current_bpm():
+    """Current tempo in plain BPM.
+
+    Real FL builds return the raw project value from getCurrentTempo, which
+    is BPM * 1000 (e.g. 140 BPM -> 140000). Valid tempos are 10-522 BPM, so
+    anything >= 1000 must be the raw form and gets divided down.
+    """
+    bpm = mixer.getCurrentTempo()
+    if bpm and bpm >= 1000:
+        bpm = bpm / 1000.0
+    return bpm
+
+
 def _h_ping(params):
     return {
         "script_version": SCRIPT_VERSION,
@@ -192,7 +205,7 @@ def _h_toggle_record(params):
 
 def _h_get_transport_state(params):
     return {
-        "bpm": mixer.getCurrentTempo(True),  # True => BPM as a float-ish value
+        "bpm": _current_bpm(),
         "playing": bool(transport.isPlaying()),
         "recording": bool(transport.isRecording()),
         "loop_mode": "song" if transport.getLoopMode() else "pattern",
@@ -324,8 +337,9 @@ def _h_set_channel_props(params):
     if params.get("pan") is not None:
         channels.setChannelPan(ch, float(params["pan"]))
     if params.get("pitch") is not None:
-        # Mode 0 sets pitch in cents on channels that support it.
-        channels.setChannelPitch(ch, int(params["pitch"]), 0)
+        # Mode 1 = pitch in cents. (Mode 0 would be a fraction of the
+        # channel's pitch-bend range, NOT cents — the tool promises cents.)
+        channels.setChannelPitch(ch, int(params["pitch"]), 1)
     return {
         "channel": ch,
         "volume": channels.getChannelVolume(ch),
@@ -370,7 +384,7 @@ def _h_mute_channel(params):
 
 def _h_get_project_info(params):
     return {
-        "bpm": mixer.getCurrentTempo(True),
+        "bpm": _current_bpm(),
         "ppq": general.getRecPPQ(),
         "channel_count": channels.channelCount(),
         "mixer_track_count": mixer.trackCount(),
