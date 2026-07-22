@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import sys
@@ -38,22 +39,49 @@ def ask(question: str, assume_yes: bool) -> bool:
     return reply in ("y", "yes")
 
 
+def documents_dirs(system: str) -> list[Path]:
+    """Candidate Documents folders for this OS, most reliable first.
+
+    On Windows the real Documents folder is whatever the registry says —
+    OneDrive often redirects it to ~/OneDrive/Documents, so a plain
+    ~/Documents guess misses it on many machines.
+    """
+    candidates: list[Path] = []
+    if system == "Windows":
+        try:
+            import winreg
+            key_path = (r"Software\Microsoft\Windows\CurrentVersion"
+                        r"\Explorer\User Shell Folders")
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                personal, _ = winreg.QueryValueEx(key, "Personal")
+            candidates.append(Path(os.path.expandvars(personal)))
+        except (ImportError, OSError):
+            pass  # not on Windows, or the registry key is missing
+        candidates.append(Path.home() / "Documents")
+        candidates.append(Path.home() / "OneDrive" / "Documents")
+    else:
+        candidates.append(Path.home() / "Documents")
+    # Drop duplicates while keeping the order.
+    seen: set[Path] = set()
+    return [p for p in candidates if not (p in seen or seen.add(p))]
+
+
 def fl_settings_dir() -> Path:
     """Locate FL Studio's user Settings folder for this OS."""
     system = platform.system()
-    if system == "Windows":
-        base = Path.home() / "Documents" / "Image-Line" / "FL Studio" / "Settings"
-    elif system == "Darwin":
-        base = Path.home() / "Documents" / "Image-Line" / "FL Studio" / "Settings"
-    else:
+    if system not in ("Windows", "Darwin"):
         sys.exit(f"Unsupported OS: {system}. FL Studio runs on Windows and macOS only.")
-    if not base.is_dir():
-        sys.exit(
-            f"FL Studio settings folder not found at:\n  {base}\n"
-            "Is FL Studio installed? Open it once so it creates its folders, "
-            "then re-run this installer."
-        )
-    return base
+    candidates = [d / "Image-Line" / "FL Studio" / "Settings"
+                  for d in documents_dirs(system)]
+    for base in candidates:
+        if base.is_dir():
+            return base
+    tried = "\n  ".join(str(c) for c in candidates)
+    sys.exit(
+        f"FL Studio settings folder not found. Looked in:\n  {tried}\n"
+        "Is FL Studio installed? Open it once so it creates its folders, "
+        "then re-run this installer."
+    )
 
 
 def claude_desktop_config_path() -> Path:
@@ -63,7 +91,6 @@ def claude_desktop_config_path() -> Path:
         return (Path.home() / "Library" / "Application Support" / "Claude"
                 / "claude_desktop_config.json")
     if system == "Windows":
-        import os
         return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) \
             / "Claude" / "claude_desktop_config.json"
     sys.exit(f"Unsupported OS: {system}")
@@ -94,10 +121,12 @@ def server_entry() -> dict:
             "command": "uv",
             "args": ["run", "--directory", str(REPO_ROOT), "fl-studio-mcp"],
         }
+    # Claude Desktop's config only understands command/args/env (no "cwd"),
+    # so point Python at the repo through PYTHONPATH instead.
     return {
         "command": sys.executable,
         "args": ["-m", "src.main"],
-        "cwd": str(REPO_ROOT),
+        "env": {"PYTHONPATH": str(REPO_ROOT)},
     }
 
 
@@ -138,10 +167,12 @@ def main() -> None:
     install_fl_scripts(args.yes)
     register_claude_desktop(args.yes)
 
+    entry = server_entry()
+    env_flags = "".join(f"-e {k}={v} " for k, v in entry.get("env", {}).items())
     print(
         "\nFor Claude Code, register the server with:\n"
-        f"  claude mcp add {SERVER_NAME} -- "
-        f"{server_entry()['command']} {' '.join(server_entry()['args'])}\n"
+        f"  claude mcp add {SERVER_NAME} {env_flags}-- "
+        f"{entry['command']} {' '.join(entry['args'])}\n"
         "\nRemaining manual steps (see README):\n"
         "  1. Create the virtual MIDI port (loopMIDI on Windows / IAC on macOS).\n"
         "  2. In FL Studio: Options > MIDI Settings > select that port under\n"
