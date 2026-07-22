@@ -1,0 +1,105 @@
+"""MCP PianoRoll — applies note edits queued by the fl-studio-mcp server.
+
+Install location: FL Studio/Settings/Piano roll scripts/MCP_PianoRoll.pyscript
+Run it from:      Piano roll menu > Tools > Scripts > MCP PianoRoll
+
+Claude's piano roll tools (fl_add_notes, fl_add_chord_progression,
+fl_quantize_piano_roll, fl_clear_piano_roll) write ONE pending action to
+~/.fl-studio-mcp/pianoroll_queue.json. Running this script applies that
+action to the piano roll you have open, then marks it done (renames the file
+to pianoroll_queue.done.json) so it never runs twice. Undo (Ctrl+Z) works
+normally afterwards.
+"""
+
+import json
+import os
+
+import flpianoroll as flp
+
+BRIDGE_DIR = os.path.join(os.path.expanduser("~"), ".fl-studio-mcp")
+QUEUE_FILE = os.path.join(BRIDGE_DIR, "pianoroll_queue.json")
+DONE_FILE = os.path.join(BRIDGE_DIR, "pianoroll_queue.done.json")
+
+
+def _load_queue():
+    """Read the pending action, or None if there is nothing to do."""
+    try:
+        with open(QUEUE_FILE, "r") as f:
+            return json.load(f)
+    except (IOError, OSError, ValueError):
+        return None
+
+
+def _mark_done():
+    """Rename the queue file so the same action is never applied twice."""
+    try:
+        if os.path.exists(DONE_FILE):
+            os.remove(DONE_FILE)
+        os.rename(QUEUE_FILE, DONE_FILE)
+    except (IOError, OSError):
+        pass
+
+
+def _beats_to_ticks(beats):
+    """The piano roll measures time in ticks; PPQ ticks make one beat."""
+    return int(round(float(beats) * flp.score.PPQ))
+
+
+def _apply_add_notes(payload):
+    notes = payload.get("notes", [])
+    for n in notes:
+        note = flp.Note()
+        note.number = int(n["pitch"])                  # MIDI note number
+        note.time = _beats_to_ticks(n["start"])        # start, in ticks
+        note.length = _beats_to_ticks(n["length"])     # duration, in ticks
+        note.velocity = float(n.get("velocity", 0.8))  # 0.0 - 1.0
+        flp.score.addNote(note)
+    return "Added " + str(len(notes)) + " note(s)."
+
+
+def _apply_quantize(payload):
+    step_ticks = _beats_to_ticks(payload.get("step_beats", 0.25))
+    if step_ticks <= 0:
+        return "Invalid grid — nothing quantized."
+    moved = 0
+    for i in range(flp.score.noteCount):
+        note = flp.score.getNote(i)
+        snapped = int(round(note.time / float(step_ticks))) * step_ticks
+        if snapped != note.time:
+            note.time = snapped
+            moved += 1
+    return "Quantized " + str(moved) + " of " + str(flp.score.noteCount) + " note(s)."
+
+
+def _apply_clear(payload):
+    count = flp.score.noteCount
+    # Delete from the end so indices stay valid while we remove.
+    for i in range(count - 1, -1, -1):
+        flp.score.deleteNote(i)
+    return "Removed " + str(count) + " note(s)."
+
+
+ACTIONS = {
+    "add_notes": _apply_add_notes,
+    "quantize": _apply_quantize,
+    "clear": _apply_clear,
+}
+
+
+def apply_queue():
+    item = _load_queue()
+    if item is None:
+        flp.Utils.ShowMessage("MCP PianoRoll: nothing queued. Ask Claude to "
+                              "queue notes first, then run this script.")
+        return
+    action = item.get("action")
+    handler = ACTIONS.get(action)
+    if handler is None:
+        flp.Utils.ShowMessage("MCP PianoRoll: unknown action '" + str(action) + "'.")
+        return
+    message = handler(item.get("payload", {}))
+    _mark_done()
+    flp.Utils.ShowMessage("MCP PianoRoll: " + message)
+
+
+apply_queue()
